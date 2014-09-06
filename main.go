@@ -3,19 +3,23 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"io/ioutil"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
 
 func main() {
 	wundergroundAPIKey := flag.String("wunderground.api.key", "0123456789abcdef", "wunderground.com API key")
+	forecastIoAPIKey := flag.String("forecastio.api.key", "0123456789abcdef", "forecast.io API key")
 	flag.Parse()
 
 	mw := multiWeatherProvider{
 		openWeatherMap{},
 		weatherUnderground{apiKey: *wundergroundAPIKey},
+		forecastIo{apiKey: *forecastIoAPIKey, geoCode: &googleGeoCode{}},
 	}
 
 	http.HandleFunc("/weather/", func(w http.ResponseWriter, r *http.Request) {
@@ -129,4 +133,106 @@ func (w weatherUnderground) temperature(city string) (float64, error) {
 	kelvin := d.Observation.Celsius + 273.15
 	log.Printf("weatherUnderground: %s: %.2f", city, kelvin)
 	return kelvin, nil
+}
+
+type forecastIo struct {
+	apiKey string
+	geoCode
+}
+
+func (f forecastIo) temperature(city string) (float64, error) {
+
+	l, err := f.geoCode.findCityLocation(city)
+	if err != nil {
+		return 0, err
+	}
+
+	lookupUrl := "https://api.forecast.io/forecast/" + f.apiKey + "/" + strconv.FormatFloat(l.Lat, 'f', -1, 64) + "," + strconv.FormatFloat(l.Lng, 'f', -1, 64)
+
+	resp, err := http.Get(lookupUrl)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	b, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return 0, err
+	}
+
+	var rawmap map[string]*json.RawMessage
+	err = json.Unmarshal(b, &rawmap)
+	if err != nil {
+		return 0, err
+	}
+
+	var current map[string]*json.RawMessage
+	err = json.Unmarshal(*rawmap["currently"], &current)
+	if err != nil {
+		return 0, err
+	}
+
+	var temp float64
+	json.Unmarshal(*current["temperature"], &temp)
+	tempInKelvin := ((temp - 32) / 1.8) + 273.15
+
+	log.Printf("forecastIo: %s: %.2f", city, tempInKelvin)
+
+	return tempInKelvin, nil
+
+}
+
+type location struct {
+	Lat float64 `json: "lat"`
+	Lng float64 `json: "lng"`
+}
+
+type geoCode interface {
+	findCityLocation(city string) (location, error)
+}
+
+type googleGeoCode struct{}
+
+func (g googleGeoCode) findCityLocation(city string) (location, error) {
+
+	resp, err := http.Get("https://maps.googleapis.com/maps/api/geocode/json?address=" + city + "&components=country")
+	defer resp.Body.Close()
+
+	b, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return location{}, err
+	}
+
+	var rawmap map[string]*json.RawMessage
+	err = json.Unmarshal(b, &rawmap)
+	if err != nil {
+		return location{}, err
+	}
+
+	var results []*json.RawMessage
+	err = json.Unmarshal(*rawmap["results"], &results)
+	if err != nil {
+		return location{}, err
+	}
+
+	var result map[string]*json.RawMessage
+	err = json.Unmarshal(*results[0], &result)
+	if err != nil {
+		return location{}, err
+	}
+
+	var geometry map[string]*json.RawMessage
+	err = json.Unmarshal(*result["geometry"], &geometry)
+	if err != nil {
+		return location{}, err
+	}
+
+	var l location
+	err = json.Unmarshal(*geometry["location"], &l)
+	if err != nil {
+		return location{}, err
+	}
+
+	return l, nil
+
 }
