@@ -11,15 +11,21 @@ import (
 	"time"
 )
 
+func NewProviderClient() *http.Client {
+	return &http.Client{
+		Timeout: 10 * time.Second,
+	}
+}
+
 func main() {
 	wundergroundAPIKey := flag.String("wunderground.api.key", "0123456789abcdef", "wunderground.com API key")
 	forecastIoAPIKey := flag.String("forecastio.api.key", "0123456789abcdef", "forecast.io API key")
 	flag.Parse()
 
 	mw := multiWeatherProvider{
-		openWeatherMap{},
-		weatherUnderground{apiKey: *wundergroundAPIKey},
-		forecastIo{apiKey: *forecastIoAPIKey, geoCode: &googleGeoCode{}},
+		openWeatherMap{client: NewProviderClient()},
+		weatherUnderground{client: NewProviderClient(), apiKey: *wundergroundAPIKey},
+		forecastIo{apiKey: *forecastIoAPIKey, geoCode: &googleGeoCode{}, client: NewProviderClient()},
 	}
 
 	http.HandleFunc("/weather/", func(w http.ResponseWriter, r *http.Request) {
@@ -84,10 +90,12 @@ func (w multiWeatherProvider) temperature(city string) (float64, error) {
 	return sum / float64(len(w)), nil
 }
 
-type openWeatherMap struct{}
+type openWeatherMap struct {
+	client *http.Client
+}
 
 func (w openWeatherMap) temperature(city string) (float64, error) {
-	resp, err := http.Get("http://api.openweathermap.org/data/2.5/weather?q=" + city)
+	resp, err := w.client.Get("http://api.openweathermap.org/data/2.5/weather?q=" + city)
 	if err != nil {
 		return 0, err
 	}
@@ -110,10 +118,11 @@ func (w openWeatherMap) temperature(city string) (float64, error) {
 
 type weatherUnderground struct {
 	apiKey string
+	client *http.Client
 }
 
 func (w weatherUnderground) temperature(city string) (float64, error) {
-	resp, err := http.Get("http://api.wunderground.com/api/" + w.apiKey + "/conditions/q/" + city + ".json")
+	resp, err := w.client.Get("http://api.wunderground.com/api/" + w.apiKey + "/conditions/q/" + city + ".json")
 	if err != nil {
 		return 0, err
 	}
@@ -138,6 +147,11 @@ func (w weatherUnderground) temperature(city string) (float64, error) {
 type forecastIo struct {
 	apiKey string
 	geoCode
+	client *http.Client
+}
+
+func NewForecastIo(apiKey string, gc geoCode, c *http.Client) *forecastIo {
+	return &forecastIo{apiKey: apiKey, geoCode: gc, client: c}
 }
 
 func (f forecastIo) temperature(city string) (float64, error) {
@@ -149,7 +163,7 @@ func (f forecastIo) temperature(city string) (float64, error) {
 
 	lookupUrl := "https://api.forecast.io/forecast/" + f.apiKey + "/" + strconv.FormatFloat(l.Lat, 'f', -1, 64) + "," + strconv.FormatFloat(l.Lng, 'f', -1, 64)
 
-	resp, err := http.Get(lookupUrl)
+	resp, err := f.client.Get(lookupUrl)
 	if err != nil {
 		return 0, err
 	}
